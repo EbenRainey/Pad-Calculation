@@ -5,6 +5,7 @@ import pandas as pd
 from shapely.geometry import Polygon, Point
 from scipy.optimize import brentq
 import io
+import tempfile
 
 # === Processing Functions ===
 def extract_pad_centers(doc, layer_name="PAD CENTRE POINTS"):
@@ -57,9 +58,8 @@ def enforce_slope(a, b_slope, min_s, max_s):
 
 def volume_difference(c_shift, a, b_slope, pts):
     diffs = (a * pts[:, 0] + b_slope * pts[:, 1] + c_shift) - pts[:, 2]
-    vols = diffs  # area per pt assumed = 1
-    cut = np.sum(vols[vols > 0])
-    fill = -np.sum(vols[vols < 0])
+    cut = np.sum(diffs[diffs > 0])
+    fill = -np.sum(diffs[diffs < 0])
     return cut - fill
 
 
@@ -73,19 +73,21 @@ def balance_cutfill(a, b_slope, points):
 
 
 def process_dxf(file_bytes, params):
-    # Read DXF from bytes
-    doc = ezdxf.readfile(io.BytesIO(file_bytes))
+    # Read DXF from bytes by writing to a temporary file
+    with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp.flush()
+        tmp_path = tmp.name
+    doc = ezdxf.readfile(tmp_path)
     centers = extract_pad_centers(doc)
     tin_faces = extract_tin_faces(doc)
     pads = generate_pad_polygons(centers, params['pad_length'], params['pad_width'])
 
     summary = []
-    # Prepare output DXF
     out_doc = ezdxf.new('AC1032')
     out_msp = out_doc.modelspace()
 
     for idx, pad in enumerate(pads):
-        # Collect points inside pad
         pts = []
         for face in tin_faces:
             for x, y, z in face:
@@ -95,12 +97,10 @@ def process_dxf(file_bytes, params):
         if pts.size == 0:
             continue
 
-        # Fit and constrain plane
         a0, b0, _ = fit_plane(pts)
         a1, b1 = enforce_slope(a0, b0, params['min_slope'], params['max_slope'])
         c1 = balance_cutfill(a1, b1, pts)
 
-        # Compute volumes
         diffs = (a1 * pts[:, 0] + b1 * pts[:, 1] + c1) - pts[:, 2]
         cut = float(np.sum(diffs[diffs > 0]))
         fill = float(-np.sum(diffs[diffs < 0]))
@@ -116,7 +116,6 @@ def process_dxf(file_bytes, params):
             'fill_volume': fill
         })
 
-        # Add pad plane to output DXF
         coords = list(pad.exterior.coords)[:-1]
         z_vals = [a1 * x + b1 * y + c1 for x, y in coords]
         for i in range(len(coords)):
@@ -128,12 +127,10 @@ def process_dxf(file_bytes, params):
                 (coords[i][0], coords[i][1], z_vals[i])
             )
 
-    # Serialize DXF output
     dxf_buffer = io.BytesIO()
     out_doc.write(dxf_buffer)
     dxf_bytes = dxf_buffer.getvalue()
 
-    # Create summary DataFrame
     df = pd.DataFrame(summary)
     return dxf_bytes, df
 
@@ -143,7 +140,6 @@ st.markdown("Upload a DXF containing layers 'PAD CENTRE POINTS' and 'TIN SURFACE
 
 uploaded = st.file_uploader("Upload DXF file", type=["dxf"] )
 
-# Sidebar for parameters
 st.sidebar.header("Design Parameters")
 pad_length = st.sidebar.number_input("Pad length (m)", min_value=1.0, max_value=100.0, value=10.0)
 pad_width  = st.sidebar.number_input("Pad width (m)", min_value=1.0, max_value=100.0, value=10.0)
@@ -165,12 +161,10 @@ if uploaded:
         'max_batter_length': max_b_len,
         'tolerance': tolerance
     }
-    # Process DXF
     dxf_bytes, summary_df = process_dxf(uploaded.read(), params)
-
-    # Offer downloads
     st.download_button("Download Design DXF", data=dxf_bytes, file_name="design_output.dxf")
     st.write("### Volume Summary")
     st.dataframe(summary_df)
     csv_data = summary_df.to_csv(index=False).encode('utf-8')
     st.download_button("Download Summary CSV", data=csv_data, file_name="summary.csv")
+
