@@ -74,17 +74,19 @@ def balance_cutfill(a, b_slope, points):
 
 
 def process_dxf(file_bytes, params):
-    # Write bytes to temporary file for ezdxf to read
+    # Write bytes to temporary .dxf file
     with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
         tmp.write(file_bytes)
         tmp.flush()
         tmp_path = tmp.name
     doc = ezdxf.readfile(tmp_path)
+
     centers = extract_pad_centers(doc)
     tin_faces = extract_tin_faces(doc)
     pads = generate_pad_polygons(centers, params['pad_length'], params['pad_width'])
 
     summary = []
+    # Create output DXF
     out_doc = ezdxf.new('AC1032')
     out_msp = out_doc.modelspace()
 
@@ -98,10 +100,12 @@ def process_dxf(file_bytes, params):
         if pts.size == 0:
             continue
 
+        # Fit plane and enforce slope
         a0, b0, _ = fit_plane(pts)
         a1, b1 = enforce_slope(a0, b0, params['min_slope'], params['max_slope'])
         c1 = balance_cutfill(a1, b1, pts)
 
+        # Compute cut/fill
         diffs = (a1 * pts[:, 0] + b1 * pts[:, 1] + c1) - pts[:, 2]
         cut = float(np.sum(diffs[diffs > 0]))
         fill = float(-np.sum(diffs[diffs < 0]))
@@ -117,21 +121,22 @@ def process_dxf(file_bytes, params):
             'fill_volume': fill
         })
 
-        # Add pad plane faces correctly: pass list of 4 vertices
+        # Add pad plane as a quad face
         coords = list(pad.exterior.coords)[:-1]
         z_vals = [a1 * x + b1 * y + c1 for x, y in coords]
-        # Create each triangular face or as quad
-        for i in range(len(coords)):
-            j = (i + 1) % len(coords)
-            v1 = (coords[i][0], coords[i][1], z_vals[i])
-            v2 = (coords[j][0], coords[j][1], z_vals[j])
-            # Quad face becomes two triangles
-            out_msp.add_3dface([v1, v2, v2, v1])
+        # Define four vertices
+        v1 = (coords[0][0], coords[0][1], z_vals[0])
+        v2 = (coords[1][0], coords[1][1], z_vals[1])
+        v3 = (coords[2][0], coords[2][1], z_vals[2])
+        v4 = (coords[3][0], coords[3][1], z_vals[3])
+        out_msp.add_3dface([v1, v2, v3, v4])
 
-    # Output DXF and summary
-    dxf_buffer = io.BytesIO()
-    out_doc.write(dxf_buffer)
-    dxf_bytes = dxf_buffer.getvalue()
+    # Write DXF to string buffer, then encode to bytes
+    str_buffer = io.StringIO()
+    out_doc.write(str_buffer)
+    dxf_str = str_buffer.getvalue()
+    dxf_bytes = dxf_str.encode('utf-8')
+
     df = pd.DataFrame(summary)
     return dxf_bytes, df
 
@@ -139,7 +144,7 @@ def process_dxf(file_bytes, params):
 st.title("Pad Design & Cut/Fill Balance")
 st.markdown("Upload a DXF containing layers 'PAD CENTRE POINTS' and 'TIN SURFACE', then set parameters below.")
 
-uploaded = st.file_uploader("Upload DXF file", type=["dxf"] )
+uploaded = st.file_uploader("Upload DXF file", type=["dxf"])
 
 st.sidebar.header("Design Parameters")
 pad_length = st.sidebar.number_input("Pad length (m)", min_value=1.0, max_value=100.0, value=10.0)
