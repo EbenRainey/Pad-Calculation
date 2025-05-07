@@ -8,6 +8,7 @@ import io
 import tempfile
 
 # === Processing Functions ===
+
 def extract_pad_centers(doc, layer_name="PAD CENTRE POINTS"):
     msp = doc.modelspace()
     centers = []
@@ -73,7 +74,7 @@ def balance_cutfill(a, b_slope, points):
 
 
 def process_dxf(file_bytes, params):
-    # Read DXF from bytes by writing to a temporary file
+    # Write bytes to temporary file for ezdxf to read
     with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as tmp:
         tmp.write(file_bytes)
         tmp.flush()
@@ -116,21 +117,21 @@ def process_dxf(file_bytes, params):
             'fill_volume': fill
         })
 
+        # Add pad plane faces correctly: pass list of 4 vertices
         coords = list(pad.exterior.coords)[:-1]
         z_vals = [a1 * x + b1 * y + c1 for x, y in coords]
+        # Create each triangular face or as quad
         for i in range(len(coords)):
             j = (i + 1) % len(coords)
-            out_msp.add_3dface(
-                (coords[i][0], coords[i][1], z_vals[i]),
-                (coords[j][0], coords[j][1], z_vals[j]),
-                (coords[j][0], coords[j][1], z_vals[j]),
-                (coords[i][0], coords[i][1], z_vals[i])
-            )
+            v1 = (coords[i][0], coords[i][1], z_vals[i])
+            v2 = (coords[j][0], coords[j][1], z_vals[j])
+            # Quad face becomes two triangles
+            out_msp.add_3dface([v1, v2, v2, v1])
 
+    # Output DXF and summary
     dxf_buffer = io.BytesIO()
     out_doc.write(dxf_buffer)
     dxf_bytes = dxf_buffer.getvalue()
-
     df = pd.DataFrame(summary)
     return dxf_bytes, df
 
@@ -167,4 +168,3 @@ if uploaded:
     st.dataframe(summary_df)
     csv_data = summary_df.to_csv(index=False).encode('utf-8')
     st.download_button("Download Summary CSV", data=csv_data, file_name="summary.csv")
-
